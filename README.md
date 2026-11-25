@@ -1,5 +1,7 @@
 # mediathek-auto
 
+![Mediathek-Auto – ein Comic-Auto mit Filmrollen als Rädern und einem Kinositz auf dem Dach](assets/mediathek-auto.png)
+
 Lädt automatisch gut bewertete Spielfilme aus den Mediatheken von ARD und ZDF (inklusive arte, 3sat und der Dritten Programme) herunter. Die Filme werden mit HandBrakeCLI umcodiert und als `Titel (Jahr)/Titel (Jahr).mp4` abgelegt. Nach jedem Lauf kommt auf Wunsch ein Bericht per iMessage. Läuft auf macOS und nutzt nur die Python-Standardbibliothek.
 
 ## So funktioniert es
