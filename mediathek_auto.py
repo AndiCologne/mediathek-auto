@@ -624,16 +624,134 @@ def display_title(e: dict, m: dict) -> str:
 # --------------------------------------------------------------------------
 # Download + Umcodieren
 # --------------------------------------------------------------------------
-def download_video(url: str, dest: str) -> bool:
-    if ".m3u8" in url.split("?")[0]:
-        ffmpeg = shutil.which("ffmpeg") or "/opt/homebrew/bin/ffmpeg"
-        if not os.path.exists(ffmpeg):
-            log.warning("HLS-Stream (m3u8) braucht ffmpeg (brew install ffmpeg) – übersprungen.")
-            return False
-        rc = run([ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-i", url,
-                  "-c", "copy", "-bsf:a", "aac_adtstoasc", dest])
-        return rc == 0 and os.path.exists(dest)
-    return curl_download(url, dest)
+def find_tool(name: str) -> Optional[str]:
+    for p in (shutil.which(name), "/opt/homebrew/bin/" + name, "/usr/local/bin/" + name):
+        if p and os.path.exists(p):
+            return p
+    return None
+
+
+def media_minutes(path: str) -> Optional[float]:
+    """Laufzeit einer Videodatei in Minuten (über ffprobe), None wenn unbekannt."""
+    probe = find_tool("ffprobe")
+    if not probe or not os.path.exists(path):
+        return None
+    try:
+        out = subprocess.run([probe, "-v", "error", "-show_entries", "format=duration",
+                              "-of", "default=nw=1:nk=1", path],
+                             capture_output=True, text=True, timeout=120).stdout.strip()
+        return float(out) / 60.0
+    except Exception:
+        return None
+
+
+def long_enough(path: str, expected_min: float, what: str) -> bool:
+    """Schützt vor abgebrochenen Downloads: Datei muss fast so lang sein wie der Film."""
+    got = media_minutes(path)
+    if got is None:
+        ok = os.path.exists(path) and os.path.getsize(path) > 50 * 1024 * 1024
+        if not ok:
+            log.warning("%s: Datei fehlt oder ist zu klein.", what)
+        return ok
+    need = max(1.0, expected_min * 0.9 - 3)
+    if got < need:
+        log.warning("%s unvollständig: %.1f min statt ca. %.0f min.", what, got, expected_min)
+        return False
+    return True
+
+
+def _attrs(line: str) -> Dict[str, str]:
+    return {k: v.strip('"') for k, v in re.findall(r'([A-Z0-9-]+)=("[^"]*"|[^,]*)', line)}
+
+
+def hls_pick(url: str) -> Tuple[str, Optional[str]]:
+    """Liest eine HLS-Master-Playlist und wählt die beste Videospur (≤1080p) und die
+    passende Tonspur (Standard bzw. Deutsch). Gibt (video_url, audio_url|None) zurück."""
+    from urllib.parse import urljoin
+    try:
+        text = subprocess.run(["curl", "-sS", "-L", "--fail", "--retry", "3", url],
+                              capture_output=True, text=True, timeout=60).stdout
+    except Exception:
+        return url, None
+    try:
+        with open(os.path.join(LOG_DIR, "last_playlist.m3u8"), "w", encoding="utf-8") as f:
+            f.write("# " + url + "\n" + text)
+    except Exception:
+        pass
+    if "#EXT-X-STREAM-INF" not in text:
+        return url, None
+    lines = text.splitlines()
+    audio: Dict[str, List[Dict[str, str]]] = {}
+    variants = []
+    for k, line in enumerate(lines):
+        if line.startswith("#EXT-X-MEDIA:") and "TYPE=AUDIO" in line:
+            a = _attrs(line.split(":", 1)[1])
+            audio.setdefault(a.get("GROUP-ID", ""), []).append(a)
+        elif line.startswith("#EXT-X-STREAM-INF:"):
+            a = _attrs(line.split(":", 1)[1])
+            nxt = next((l for l in lines[k + 1:] if l and not l.startswith("#")), None)
+            if nxt:
+                h = 0
+                m = re.match(r"(\d+)x(\d+)", a.get("RESOLUTION", ""))
+                if m:
+                    h = int(m.group(2))
+                variants.append((h, int(a.get("BANDWIDTH", "0") or 0), urljoin(url, nxt), a.get("AUDIO")))
+    if not variants:
+        return url, None
+    ok = [v for v in variants if v[0] <= 1080] or variants
+    h, bw, vurl, group = max(ok, key=lambda v: (v[0], v[1]))
+    aurl = None
+    cands = [a for a in audio.get(group or "", []) if a.get("URI")]
+    if cands:
+        def score(a):
+            lang = (a.get("LANGUAGE", "") + " " + a.get("NAME", "")).lower()
+            return (1 if re.search(r"\b(de|deu|ger)\b|deutsch", lang) else 0,
+                    1 if a.get("DEFAULT") == "YES" else 0)
+        best = max(cands, key=score)
+        aurl = urljoin(url, best["URI"])
+        log.info("HLS: Video %sp (%d kbit/s), Ton „%s“", h, bw // 1000, best.get("NAME", "?"))
+    else:
+        log.info("HLS: Video %sp (%d kbit/s), Ton im Videostream", h, bw // 1000)
+    return vurl, aurl
+
+
+RECONNECT = ["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_on_network_error", "1",
+             "-reconnect_delay_max", "30", "-rw_timeout", "60000000"]
+
+
+def download_once(url: str, dest: str) -> bool:
+    for p in (dest, dest + ".part"):
+        if os.path.exists(p):
+            os.remove(p)
+    if ".m3u8" not in url.split("?")[0]:
+        return curl_download(url, dest)
+    ffmpeg = find_tool("ffmpeg")
+    if not ffmpeg:
+        log.warning("HLS-Stream (m3u8) braucht ffmpeg (brew install ffmpeg) – übersprungen.")
+        return False
+    vurl, aurl = hls_pick(url)
+    cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y"] + RECONNECT + ["-i", vurl]
+    if aurl:
+        cmd += RECONNECT + ["-i", aurl, "-map", "0:v:0", "-map", "1:a:0"]
+    else:
+        cmd += ["-map", "0:v:0", "-map", "0:a:0?"]
+    cmd += ["-c", "copy", "-bsf:a", "aac_adtstoasc", "-movflags", "+faststart", dest]
+    with open(os.path.join(LOG_DIR, "ffmpeg-last.log"), "w") as fl:
+        rc = run(cmd, stdout=fl, stderr=subprocess.STDOUT)
+    if rc != 0:
+        log.warning("ffmpeg rc=%s, siehe logs/ffmpeg-last.log", rc)
+    return rc == 0 and os.path.exists(dest)
+
+
+def download_video(url: str, dest: str, expected_min: float = 0, tries: int = 3) -> bool:
+    """Lädt herunter und prüft die Länge; bei abgebrochenem Download bis zu 3 Versuche."""
+    for n in range(1, tries + 1):
+        if download_once(url, dest) and (not expected_min or long_enough(dest, expected_min, "Download")):
+            return True
+        if n < tries:
+            log.info("Download-Versuch %d fehlgeschlagen, neuer Versuch in 60 s …", n)
+            time.sleep(60)
+    return False
 
 
 def encode(cfg: dict, src: str, dest: str) -> bool:
@@ -674,14 +792,16 @@ def process(cfg: dict, item: dict, done: dict) -> bool:
              m.get("votes", 0), e["sender"], e["thema"])
     t0 = time.time()
     try:
-        if not download_video(url, src):
+        if not download_video(url, src, e["minutes"]):
             if e["url_hd"] and e["url"] and url != e["url"]:
                 log.info("Versuche Standard-Qualität …")
-                if not download_video(e["url"], src):
+                if not download_video(e["url"], src, e["minutes"]):
                     return False
             else:
                 return False
         if not encode(cfg, src, out):
+            return False
+        if not long_enough(out, e["minutes"], "Umcodierte Datei"):
             return False
         os.makedirs(folder, exist_ok=True)
         shutil.move(out, final)
