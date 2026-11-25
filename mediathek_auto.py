@@ -665,7 +665,7 @@ def _attrs(line: str) -> Dict[str, str]:
 
 
 def hls_pick(url: str) -> Tuple[str, Optional[str]]:
-    """Liest eine HLS-Master-Playlist und wählt die beste Videospur (≤1080p) und die
+    """Liest eine HLS-Master-Playlist und wählt die beste Videospur (höchste Auflösung) und die
     passende Tonspur (Standard bzw. Deutsch). Gibt (video_url, audio_url|None) zurück."""
     from urllib.parse import urljoin
     try:
@@ -698,16 +698,20 @@ def hls_pick(url: str) -> Tuple[str, Optional[str]]:
                 variants.append((h, int(a.get("BANDWIDTH", "0") or 0), urljoin(url, nxt), a.get("AUDIO")))
     if not variants:
         return url, None
-    ok = [v for v in variants if v[0] <= 1080] or variants
-    h, bw, vurl, group = max(ok, key=lambda v: (v[0], v[1]))
+    h, bw, vurl, group = max(variants, key=lambda v: (v[0], v[1]))
     aurl = None
     cands = [a for a in audio.get(group or "", []) if a.get("URI")]
     if cands:
         def score(a):
             lang = (a.get("LANGUAGE", "") + " " + a.get("NAME", "")).lower()
-            return (1 if re.search(r"\b(de|deu|ger)\b|deutsch", lang) else 0,
+            ad = bool(re.search(r"audiodeskription|hörfassung|hoerfassung|\bad\b|descri", lang)
+                      or "public.accessibility" in a.get("CHARACTERISTICS", ""))
+            return (0 if ad else 1,
+                    1 if re.search(r"\b(de|deu|ger)\b|deutsch", lang) else 0,
                     1 if a.get("DEFAULT") == "YES" else 0)
         best = max(cands, key=score)
+        if score(best)[1] == 0:
+            log.warning("HLS: keine deutsche Tonspur gefunden, nehme „%s“", best.get("NAME", "?"))
         aurl = urljoin(url, best["URI"])
         log.info("HLS: Video %sp (%d kbit/s), Ton „%s“", h, bw // 1000, best.get("NAME", "?"))
     else:
@@ -754,8 +758,41 @@ def download_video(url: str, dest: str, expected_min: float = 0, tries: int = 3)
     return False
 
 
+def german_audio_track(path: str) -> Optional[int]:
+    """Nummer (ab 1) der deutschen Tonspur ohne Hörfassung; None wenn nicht ermittelbar."""
+    probe = find_tool("ffprobe")
+    if not probe:
+        return None
+    try:
+        out = subprocess.run([probe, "-v", "error", "-select_streams", "a", "-show_entries",
+                              "stream=index:stream_tags=language,title,handler_name:stream_disposition=default,visual_impaired",
+                              "-of", "json", path], capture_output=True, text=True, timeout=120).stdout
+        streams = json.loads(out).get("streams", [])
+    except Exception:
+        return None
+    if not streams:
+        return None
+    best, best_score = 1, None
+    for n, st in enumerate(streams, 1):
+        tags = {k.lower(): str(v).lower() for k, v in (st.get("tags") or {}).items()}
+        disp = st.get("disposition") or {}
+        title = tags.get("title", "") + " " + tags.get("handler_name", "")
+        ad = bool(disp.get("visual_impaired") or re.search(r"audiodeskription|hörfassung|\bad\b|descri", title))
+        german = tags.get("language", "") in ("deu", "ger", "de") or "deutsch" in title
+        sc = (0 if ad else 1, 1 if german else 0, 1 if disp.get("default") else 0, -n)
+        if best_score is None or sc > best_score:
+            best, best_score = n, sc
+    if len(streams) > 1:
+        log.info("Tonspur %d von %d gewählt (Deutsch, ohne Hörfassung).", best, len(streams))
+    return best
+
+
 def encode(cfg: dict, src: str, dest: str) -> bool:
     cmd = [cfg["handbrake_cli"], "-i", src, "-o", dest, "--preset", cfg["handbrake_preset"]]
+    track = german_audio_track(src)
+    if track:
+        # Spur zweimal angeben: das Preset macht daraus AAC-Stereo + Surround-Spur
+        cmd += ["--audio", "%d,%d" % (track, track)]
     with open(os.path.join(LOG_DIR, "handbrake-last.log"), "w") as hb:
         rc = run(cmd, stdout=hb, stderr=subprocess.STDOUT)
     if rc != 0 or not os.path.exists(dest) or os.path.getsize(dest) < 10 * 1024 * 1024:

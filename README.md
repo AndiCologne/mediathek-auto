@@ -10,7 +10,7 @@ Lädt automatisch gut bewertete Spielfilme aus den Mediatheken von ARD und ZDF (
 2. Es filtert Spielfilme heraus: ab 70 Minuten, ohne Hörfassung, Gebärdensprache, klare Sprache, Originalfassung, Krimireihen und Mehrteiler.
 3. Es gleicht die Filme mit den [IMDb Non-Commercial Datasets](https://developer.imdb.com/non-commercial-datasets/) ab. Titel, Produktionsjahr und Laufzeit müssen passen, Dokumentarfilme werden ausgeschlossen.
 4. Geladen werden Filme mit einer **IMDb-Wertung ab 8.0**, **mehr als 2.500 Stimmen** und einem **Erscheinungsjahr ab 1970**. Alle drei Grenzen sind einstellbar.
-5. Die Filme werden in HD heruntergeladen und mit HandBrakeCLI umcodiert (Standard-Preset: „Apple 1080p30 Surround“).
+5. Die Filme werden in der besten verfügbaren Videoqualität und mit deutscher Tonspur (ohne Hörfassung) heruntergeladen und mit HandBrakeCLI umcodiert (Standard-Preset: „Apple 1080p30 Surround“).
 6. Abgelegt wird als `<Zielordner>/Titel (Jahr)/Titel (Jahr).mp4`.
 7. Der Film wird in `Heruntergeladene_Filme.txt` eingetragen und nie wieder geladen.
 
@@ -18,7 +18,7 @@ Lädt automatisch gut bewertete Spielfilme aus den Mediatheken von ARD und ZDF (
 
 - macOS mit Python 3.9 oder neuer, z. B. über die Xcode Command Line Tools oder `brew install python`
 - [HandBrakeCLI](https://handbrake.fr/downloads2.php), z. B. `brew install handbrake`
-- optional `ffmpeg` für Filme, die nur als Stream (m3u8) angeboten werden: `brew install ffmpeg`
+- `ffmpeg` und `ffprobe` (`brew install ffmpeg`): für Streams (m3u8), für die Wahl der deutschen Tonspur und für die Prüfung, ob ein Download vollständig ist
 
 ## Einrichten
 
