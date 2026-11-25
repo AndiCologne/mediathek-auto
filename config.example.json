@@ -1,0 +1,8 @@
+{
+  "target_dir": "/Volumes/MeineSSD/Movies",
+  "imessage_to": "deine-apple-id@example.com",
+  "min_rating": 8.0,
+  "min_votes": 2500,
+  "min_year": 1970,
+  "max_per_run": 15
+}

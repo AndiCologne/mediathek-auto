@@ -1,0 +1,9 @@
+# persönliche Einstellungen und Laufzeitdaten
+config.json
+cache/
+logs/
+state/
+tmp/
+__pycache__/
+*.pyc
+.DS_Store
