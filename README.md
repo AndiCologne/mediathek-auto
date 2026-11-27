@@ -16,7 +16,7 @@ Lädt automatisch gut bewertete Spielfilme aus den Mediatheken von ARD und ZDF h
 8. Der Film wird als `<Zielordner>/Titel (Jahr)/Titel (Jahr).mp4` abgelegt und in `Heruntergeladene_Filme.txt` eingetragen.
 9. Zum Schluss kommt eine iMessage mit den neuen Filmen, eventuellen Fehlern und dem freien Speicherplatz.
 
-## Ordnerstruktur
+## Ordnerstruktur (Beispiel)
 
 Der Code liegt in einem versteckten Unterordner des Zielordners:
 
@@ -42,7 +42,7 @@ Der Code liegt in einem versteckten Unterordner des Zielordners:
 - HandBrakeCLI: `brew install handbrake`
 - ffmpeg und ffprobe: `brew install ffmpeg`. Gebraucht für Streams (m3u8, z. B. arte), für die Wahl der deutschen Tonspur und für die Prüfung, ob ein Download vollständig ist.
 
-## Einrichten
+## Einrichten (Zielordner als Beispiel)
 
 ```bash
 # 1. Code in den versteckten Ordner im Zielordner legen
