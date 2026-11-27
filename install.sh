@@ -1,6 +1,6 @@
 #!/bin/bash
 # Richtet den wöchentlichen Lauf ein: jeden Mittwoch um 02:00 Uhr.
-# Aufruf im Terminal:
+# Aufruf im Terminal (Pfad zum Code-Ordner anpassen):
 #   bash "/Volumes/TB4SSD/AILocalSandbox/Movies/.mediathek-auto/install.sh"
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -26,6 +26,13 @@ else
 fi
 
 mkdir -p "$HOME/Library/LaunchAgents" "$DIR/logs"
+export PYTHONDONTWRITEBYTECODE=1
+
+# config.json anlegen bzw. ins beschriftete Format bringen (Werte bleiben erhalten)
+if [ ! -f "$DIR/config.json" ] || ! grep -q '"ANPASSBAR"' "$DIR/config.json"; then
+  "$PY" "$DIR/mediathek_auto.py" --config-erstellen
+  echo "✔ config.json angelegt – Einstellungen dort unter \"ANPASSBAR\" prüfen."
+fi
 cat > "$PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -64,7 +71,7 @@ echo "✔ Zeitplan aktiv: jeden Mittwoch 02:00 Uhr ($PLIST)"
 
 # Test-iMessage über denselben Hintergrund-Mechanismus wie der nächtliche Lauf,
 # damit macOS jetzt (und nicht nachts um 2) nach der Berechtigung für „Nachrichten“ fragt.
-if grep -q '"imessage_to" *: *"[^"]' "$DIR/config.json" 2>/dev/null; then
+if "$PY" -c 'import sys; sys.path.insert(0, sys.argv[1]); import mediathek_auto as M; sys.exit(0 if M.load_config().get("imessage_to") else 1)' "$DIR"; then
   TLABEL="local.mediathek-auto.imessagetest"
   TPLIST="$HOME/Library/LaunchAgents/$TLABEL.plist"
   cat > "$TPLIST" <<EOF

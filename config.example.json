@@ -1,8 +1,93 @@
 {
-  "target_dir": "/Volumes/MeineSSD/Movies",
-  "imessage_to": "deine-apple-id@example.com",
-  "min_rating": 8.0,
-  "min_votes": 2500,
-  "min_year": 1970,
-  "max_per_run": 15
+  "_LIESMICH": "Einstellungen für Mediathek-Auto. Nur die Werte hinter \"wert\" ändern, die \"info\"-Texte erklären den Eintrag. Zahlen ohne Anführungszeichen, Dezimalpunkt statt Komma (8.0). Gilt ab dem nächsten Lauf.",
+  "ANPASSBAR": {
+    "zielordner": {
+      "wert": "/Volumes/TB4SSD/AILocalSandbox/Movies",
+      "info": "Ordner für die fertigen Filme (je Film ein Unterordner 'Titel (Jahr)'). Hier liegt auch Heruntergeladene_Filme.txt."
+    },
+    "imdb_wertung_mindestens": {
+      "wert": 8.0,
+      "info": "Nur Filme mit dieser IMDb-Wertung oder höher, z. B. 8.0."
+    },
+    "imdb_bewertungen_mehr_als": {
+      "wert": 2500,
+      "info": "Der Film braucht MEHR IMDb-Bewertungen als diese Zahl (filtert unbekannte Filme mit Zufallswertung)."
+    },
+    "laenge_mindestens_minuten": {
+      "wert": 70,
+      "info": "Kürzere Sendungen werden ignoriert (Spielfilme dauern meist ab 80 Minuten)."
+    },
+    "laenge_hoechstens_minuten": {
+      "wert": 240,
+      "info": "Längere Sendungen werden ignoriert. 0 = keine Obergrenze."
+    },
+    "erscheinungsjahr_ab": {
+      "wert": 1970,
+      "info": "Nur Filme, die laut IMDb in diesem Jahr oder später erschienen sind. 0 = alle Jahre."
+    },
+    "imessage_empfaenger": {
+      "wert": "deine-apple-id@example.com",
+      "info": "Telefonnummer (+49…) oder Apple-ID-E-Mail für den Bericht nach jedem Lauf. Leer = keine iMessage."
+    }
+  },
+  "WEITERE_EINSTELLUNGEN": {
+    "filme_pro_lauf_hoechstens": {
+      "wert": 15,
+      "info": "So viele neue Filme werden pro Lauf höchstens geladen (ein Film braucht ca. 30–60 Minuten)."
+    },
+    "freier_speicher_mindestens_gb": {
+      "wert": 30,
+      "info": "So viel Platz bleibt im Zielordner mindestens frei, sonst stoppt der Lauf."
+    },
+    "handbrake_preset": {
+      "wert": "Apple 1080p30 Surround",
+      "info": "Name des HandBrake-Presets für das Umcodieren."
+    },
+    "handbrake_programm": {
+      "wert": "/opt/homebrew/bin/HandBrakeCLI",
+      "info": "Pfad zu HandBrakeCLI."
+    },
+    "dateiendung": {
+      "wert": ".mp4",
+      "info": "Dateiendung der fertigen Filme."
+    },
+    "sender": {
+      "wert": [
+        "ARD",
+        "ZDF",
+        "ARTE.DE",
+        "3Sat",
+        "BR",
+        "HR",
+        "MDR",
+        "NDR",
+        "RBB",
+        "SR",
+        "SWR",
+        "WDR",
+        "Radio Bremen TV",
+        "ONE",
+        "ARD-alpha",
+        "tagesschau24",
+        "PHOENIX",
+        "KiKA",
+        "ZDF-tivi",
+        "ZDFneo",
+        "ZDFinfo"
+      ],
+      "info": "Berücksichtigte Sender, so wie sie in MediathekView heißen."
+    },
+    "imessage_auch_ohne_neue_filme": {
+      "wert": true,
+      "info": "true = auch dann eine iMessage, wenn kein neuer Film dabei war."
+    },
+    "mac_mitteilung": {
+      "wert": true,
+      "info": "true = zusätzlich eine Mitteilung auf dem Mac anzeigen."
+    },
+    "logs_aufbewahren_tage": {
+      "wert": 60,
+      "info": "Logs und Berichte, die älter sind, werden automatisch gelöscht."
+    }
+  }
 }

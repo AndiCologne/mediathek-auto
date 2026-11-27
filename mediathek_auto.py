@@ -47,6 +47,7 @@ DEFAULTS = {
     "min_year": 1970,             # Erscheinungsjahr laut IMDb mindestens
     "min_votes": 2500,            # IMDb-Stimmen müssen MEHR als dieser Wert sein
     "min_minutes": 70,            # Mindestlänge in der Mediathek
+    "max_minutes": 240,           # Höchstlänge in der Mediathek (0 = keine Grenze)
     "max_per_run": 15,            # Höchstzahl neuer Filme pro Lauf
     "min_free_gb": 30,            # so viel muss auf der SSD frei bleiben
     "imdb_types": ["movie", "tvMovie"],
@@ -68,7 +69,52 @@ DEFAULTS = {
     "imessage_to": "",            # Telefonnummer oder Apple-ID-E-Mail für den Abschlussbericht
     "imessage_when_nothing_new": True,  # auch melden, wenn nichts Neues dabei war
     "list_file": "",              # leer = <target_dir>/Heruntergeladene_Filme.txt
+    "log_keep_days": 60,          # ältere Logs/Berichte werden automatisch gelöscht
 }
+
+# Beschriftete Einträge der config.json -> interne Namen.
+# Reihenfolge und Texte bestimmen auch, wie --config-erstellen die Datei schreibt.
+CONFIG_SCHEMA = [
+    ("ANPASSBAR", [
+        ("zielordner", "target_dir",
+         "Ordner für die fertigen Filme (je Film ein Unterordner 'Titel (Jahr)'). Hier liegt auch Heruntergeladene_Filme.txt."),
+        ("imdb_wertung_mindestens", "min_rating",
+         "Nur Filme mit dieser IMDb-Wertung oder höher, z. B. 8.0."),
+        ("imdb_bewertungen_mehr_als", "min_votes",
+         "Der Film braucht MEHR IMDb-Bewertungen als diese Zahl (filtert unbekannte Filme mit Zufallswertung)."),
+        ("laenge_mindestens_minuten", "min_minutes",
+         "Kürzere Sendungen werden ignoriert (Spielfilme dauern meist ab 80 Minuten)."),
+        ("laenge_hoechstens_minuten", "max_minutes",
+         "Längere Sendungen werden ignoriert. 0 = keine Obergrenze."),
+        ("erscheinungsjahr_ab", "min_year",
+         "Nur Filme, die laut IMDb in diesem Jahr oder später erschienen sind. 0 = alle Jahre."),
+        ("imessage_empfaenger", "imessage_to",
+         "Telefonnummer (+49…) oder Apple-ID-E-Mail für den Bericht nach jedem Lauf. Leer = keine iMessage."),
+    ]),
+    ("WEITERE_EINSTELLUNGEN", [
+        ("filme_pro_lauf_hoechstens", "max_per_run",
+         "So viele neue Filme werden pro Lauf höchstens geladen (ein Film braucht ca. 30–60 Minuten)."),
+        ("freier_speicher_mindestens_gb", "min_free_gb",
+         "So viel Platz bleibt im Zielordner mindestens frei, sonst stoppt der Lauf."),
+        ("handbrake_preset", "handbrake_preset",
+         "Name des HandBrake-Presets für das Umcodieren."),
+        ("handbrake_programm", "handbrake_cli",
+         "Pfad zu HandBrakeCLI."),
+        ("dateiendung", "file_extension",
+         "Dateiendung der fertigen Filme."),
+        ("sender", "senders",
+         "Berücksichtigte Sender, so wie sie in MediathekView heißen."),
+        ("imessage_auch_ohne_neue_filme", "imessage_when_nothing_new",
+         "true = auch dann eine iMessage, wenn kein neuer Film dabei war."),
+        ("mac_mitteilung", "notify",
+         "true = zusätzlich eine Mitteilung auf dem Mac anzeigen."),
+        ("logs_aufbewahren_tage", "log_keep_days",
+         "Logs und Berichte, die älter sind, werden automatisch gelöscht."),
+    ]),
+]
+CONFIG_NOTE = ("Einstellungen für Mediathek-Auto. Nur die Werte hinter \"wert\" ändern, "
+               "die \"info\"-Texte erklären den Eintrag. Zahlen ohne Anführungszeichen, "
+               "Dezimalpunkt statt Komma (8.0). Gilt ab dem nächsten Lauf.")
 
 WORK_DIR = BASE_DIR
 STATE_DIR = os.path.join(WORK_DIR, "state")
@@ -125,12 +171,40 @@ log = logging.getLogger("mediathek_auto")
 # Hilfsfunktionen
 # --------------------------------------------------------------------------
 def load_config() -> dict:
+    """Liest config.json. Versteht das beschriftete Format (ANPASSBAR/WEITERE_EINSTELLUNGEN
+    mit "wert"/"info") und – für ältere Installationen – flache interne Schlüssel."""
     cfg = dict(DEFAULTS)
     path = os.path.join(BASE_DIR, "config.json")
-    if os.path.exists(path):
-        with open(path, encoding="utf-8") as f:
-            cfg.update(json.load(f))
+    if not os.path.exists(path):
+        return cfg
+    with open(path, encoding="utf-8") as f:
+        raw = json.load(f)
+    labels = {label: key for _, items in CONFIG_SCHEMA for label, key, _ in items}
+    for name, val in raw.items():
+        if name.startswith("_"):
+            continue
+        if isinstance(val, dict) and name in {sec for sec, _ in CONFIG_SCHEMA}:
+            for label, entry in val.items():
+                v = entry.get("wert") if isinstance(entry, dict) else entry
+                if label in labels:
+                    cfg[labels[label]] = v
+                elif label in DEFAULTS:
+                    cfg[label] = v
+                else:
+                    print("Hinweis: unbekannter Eintrag in config.json: %s" % label, file=sys.stderr)
+        elif name in DEFAULTS:
+            cfg[name] = val
+        elif name in labels:
+            cfg[labels[name]] = val.get("wert") if isinstance(val, dict) else val
     return cfg
+
+
+def config_document(cfg: dict) -> dict:
+    """Beschriftete config.json aus den aktuellen Einstellungen."""
+    doc: Dict[str, object] = {"_LIESMICH": CONFIG_NOTE}
+    for sec, items in CONFIG_SCHEMA:
+        doc[sec] = {label: {"wert": cfg.get(key), "info": info} for label, key, info in items}
+    return doc
 
 
 def norm(s: str) -> str:
@@ -463,6 +537,8 @@ def select_candidates(cfg: dict, path: str) -> List[dict]:
             continue
         mins = duration_min(e["dauer"])
         if mins is None or mins < cfg["min_minutes"]:
+            continue
+        if cfg.get("max_minutes") and mins > cfg["max_minutes"]:
             continue
         if not (e["url"] or e["url_hd"]):
             continue
@@ -875,18 +951,40 @@ def setup_logging(dry: bool) -> str:
     return stamp
 
 
+def prune_logs(days: int) -> None:
+    if not days:
+        return
+    limit = time.time() - days * 86400
+    for name in os.listdir(LOG_DIR):
+        p = os.path.join(LOG_DIR, name)
+        if (name.endswith(".log") or name.endswith(".md")) and os.path.isfile(p) \
+                and os.path.getmtime(p) < limit and not name.endswith("-last.log"):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true", help="nur suchen, nichts laden")
     ap.add_argument("--limit", type=int, default=None, help="max. Filme in diesem Lauf")
     ap.add_argument("--test-imessage", action="store_true",
                     help="nur eine Test-iMessage senden (erteilt die macOS-Berechtigung)")
+    ap.add_argument("--config-erstellen", action="store_true",
+                    help="config.json im beschrifteten Format mit den aktuellen Werten (neu) schreiben")
     args = ap.parse_args()
 
     cfg = load_config()
+    if args.config_erstellen:
+        path = os.path.join(BASE_DIR, "config.json")
+        save_json(path, config_document(cfg))
+        print("config.json geschrieben: %s" % path)
+        return 0
     for d in (STATE_DIR, LOG_DIR, CACHE_DIR, TMP_DIR):
         os.makedirs(d, exist_ok=True)
     stamp = setup_logging(args.dry_run)
+    prune_logs(int(cfg.get("log_keep_days") or 0))
 
     if args.test_imessage:
         ok = send_imessage(cfg, "🎬 Test von der Mediathek-Automatik – iMessage funktioniert.")
