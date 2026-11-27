@@ -1,0 +1,2 @@
+# PowerShell-Skripte mit Windows-Zeilenenden auschecken
+*.ps1 text eol=crlf

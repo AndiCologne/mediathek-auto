@@ -2,7 +2,7 @@
 
 ![Mediathek-Auto – ein Comic-Auto mit Filmrollen als Rädern und einem Kinositz auf dem Dach](assets/mediathek-auto.png)
 
-Lädt automatisch gut bewertete Spielfilme aus den Mediatheken von ARD und ZDF herunter, inklusive arte, 3sat und der Dritten Programme. Die Filme werden mit HandBrakeCLI umcodiert und als `Titel (Jahr)/Titel (Jahr).mp4` abgelegt. Nach jedem Lauf kommt ein Bericht per iMessage. Läuft auf macOS, einmal pro Woche, und nutzt nur die Python-Standardbibliothek.
+Lädt automatisch gut bewertete Spielfilme aus den Mediatheken von ARD und ZDF herunter, inklusive arte, 3sat und der Dritten Programme. Die Filme werden mit HandBrakeCLI umcodiert und als `Titel (Jahr)/Titel (Jahr).mp4` abgelegt. Nach jedem Lauf kommt ein Bericht per iMessage (macOS) und/oder E-Mail. Läuft auf macOS und [Windows](#windows), einmal pro Woche, und nutzt nur die Python-Standardbibliothek.
 
 ## So funktioniert es
 
@@ -14,7 +14,7 @@ Lädt automatisch gut bewertete Spielfilme aus den Mediatheken von ARD und ZDF h
 6. Heruntergeladen wird immer die beste verfügbare Videospur mit deutscher Tonspur (ohne Hörfassung). Danach prüft das Skript, ob der Download vollständig ist.
 7. HandBrakeCLI codiert den Film um (Standard-Preset: „Apple 1080p30 Surround“), und die Länge wird noch einmal geprüft.
 8. Der Film wird als `<Zielordner>/Titel (Jahr)/Titel (Jahr).mp4` abgelegt und in `Heruntergeladene_Filme.txt` eingetragen.
-9. Zum Schluss kommt eine iMessage mit den neuen Filmen, eventuellen Fehlern und dem freien Speicherplatz.
+9. Zum Schluss kommt eine iMessage und/oder E-Mail mit den neuen Filmen, eventuellen Fehlern und dem freien Speicherplatz.
 
 ## Ordnerstruktur (Beispiel)
 
@@ -28,7 +28,8 @@ Der Code liegt in einem versteckten Unterordner des Zielordners:
 └── .mediathek-auto/                          ← Code-Ordner (versteckt, im Finder: ⌘⇧.)
     ├── mediathek_auto.py                     ← das Skript
     ├── config.json                           ← alle Einstellungen
-    ├── install.sh / uninstall.sh             ← wöchentlichen Zeitplan ein- und ausschalten
+    ├── install.sh / uninstall.sh             ← wöchentlichen Zeitplan ein- und ausschalten (macOS)
+    ├── install.ps1 / uninstall.ps1           ← dasselbe für Windows
     ├── README.md
     ├── cache/   Filmliste und IMDb-Daten (etwa 2 GB mit Besetzungsdaten, wöchentlich erneuert)
     ├── logs/    Protokoll und Bericht (report_*.md) je Lauf, nach 60 Tagen automatisch gelöscht
@@ -84,7 +85,21 @@ Alle Einstellungen stehen in `config.json` im Code-Ordner. Jeder Eintrag besteht
 | `laenge_hoechstens_minuten` | `240` | Längere Sendungen werden ignoriert (`0` = keine Obergrenze) |
 | `erscheinungsjahr_ab` | `1970` | Erscheinungsjahr laut IMDb mindestens (`0` = alle Jahre) |
 | `laufzeit_toleranz_minuten` | `5` | Gibt es mehrere IMDb-Filme gleichen Titels, gilt der, dessen Laufzeit höchstens so viele Minuten von der Mediathek abweicht |
-| `imessage_empfaenger` | leer | Telefonnummer (+49…) oder Apple-ID-E-Mail für den Bericht. Leer = keine iMessage. |
+| `imessage_empfaenger` | leer | Nur macOS: Telefonnummer (+49…) oder Apple-ID-E-Mail für den Bericht. Leer = keine iMessage. |
+| `email_empfaenger` | leer | E-Mail-Adresse für den Bericht, mehrere mit Komma. Leer = keine E-Mail. Der Mailserver steht unter `EMAIL`. |
+
+### EMAIL: Mailserver für den Bericht per E-Mail
+
+| Eintrag | Voreinstellung | Bedeutung |
+|---|---|---|
+| `smtp_server` | leer | Postausgangsserver, z. B. `smtp.gmail.com`, `smtp.gmx.net`, `securesmtp.t-online.de` |
+| `smtp_port` | `587` | Meist `587` (mit `starttls`) oder `465` (mit `ssl`) |
+| `smtp_verschluesselung` | `starttls` | `starttls`, `ssl` oder `keine` |
+| `smtp_benutzer` | leer | Anmeldename, meist die eigene E-Mail-Adresse |
+| `smtp_passwort` | leer | Passwort bzw. App-Passwort. Alternativ leer lassen und die Umgebungsvariable `MEDIATHEK_SMTP_PASSWORT` setzen. |
+| `email_absender` | leer | Absenderadresse, leer = `smtp_benutzer` |
+
+Bei Gmail, iCloud und Outlook.com geht die Anmeldung nur mit einem App-Passwort, nicht mit dem normalen Passwort. Das Passwort steht im Klartext in `config.json`. Die Datei ist in `.gitignore` eingetragen und landet nicht auf GitHub.
 
 ### WEITERE_EINSTELLUNGEN
 
@@ -94,14 +109,69 @@ Alle Einstellungen stehen in `config.json` im Code-Ordner. Jeder Eintrag besteht
 | `freier_speicher_mindestens_gb` | `30` | So viel bleibt im Zielordner frei, sonst stoppt der Lauf |
 | `besetzung_abgleichen` | `true` | Unklare Filme über Darsteller und Regie klären (lädt dafür etwa 1 GB zusätzliche IMDb-Daten pro Woche) |
 | `handbrake_preset` | `Apple 1080p30 Surround` | HandBrake-Preset |
-| `handbrake_programm` | `/opt/homebrew/bin/HandBrakeCLI` | Pfad zu HandBrakeCLI |
+| `handbrake_programm` | `/opt/homebrew/bin/HandBrakeCLI` (Windows: `HandBrakeCLI.exe`) | Pfad zu HandBrakeCLI. Fehlt die Datei dort, wird im PATH und in `programme_ordner` gesucht. |
+| `programme_ordner` | leer | Optional: Ordner mit HandBrakeCLI, ffmpeg und ffprobe, z. B. `C:\Tools` |
 | `dateiendung` | `.mp4` | Dateiendung der fertigen Filme |
 | `sender` | ARD, ZDF, ARTE.DE, 3Sat, Dritte … | Berücksichtigte Sender, wie sie in MediathekView heißen |
-| `imessage_auch_ohne_neue_filme` | `true` | Auch dann eine iMessage, wenn nichts Neues dabei war |
-| `mac_mitteilung` | `true` | Zusätzlich eine Mitteilung auf dem Mac |
+| `imessage_auch_ohne_neue_filme` | `true` | Auch dann eine iMessage bzw. E-Mail, wenn nichts Neues dabei war |
+| `mac_mitteilung` | `true` | Nur macOS: zusätzlich eine Mitteilung auf dem Mac |
 | `logs_aufbewahren_tage` | `60` | Ältere Logs und Berichte werden automatisch gelöscht |
 
 Eine vollständige Vorlage steht in [`config.example.json`](config.example.json).
+
+## Windows
+
+Unter Windows funktioniert alles genauso wie auf dem Mac, mit drei Unterschieden:
+
+- Der Zeitplan läuft über die **Aufgabenplanung** statt über launchd.
+- Der Bericht kommt per **E-Mail**, iMessage gibt es unter Windows nicht.
+- Unter Windows sind in Dateinamen bestimmte Zeichen verboten. Doppelpunkte werden deshalb zu „ -“ („Star Wars - Episode IV“), andere unerlaubte Zeichen fallen weg. Lange Titel werden gekürzt, damit der Pfad unter 260 Zeichen bleibt.
+
+### Voraussetzungen (Windows 10/11)
+
+- Python 3.9 oder neuer: `winget install Python.Python.3.12`
+- ffmpeg und ffprobe: `winget install Gyan.FFmpeg`
+- HandBrakeCLI: Die Kommandozeilen-Version gibt es auf [handbrake.fr](https://handbrake.fr/downloads2.php) als ZIP-Datei. Entpacke `HandBrakeCLI.exe` zum Beispiel nach `C:\Tools` und trage diesen Ordner in `config.json` als `programme_ordner` ein. Alternativ kannst du die Datei auch direkt in den Code-Ordner legen.
+- curl ist seit Windows 10 (1803) eingebaut.
+- Die SSD muss mit **exFAT** oder **NTFS** formatiert sein, denn APFS kann Windows nicht lesen. exFAT funktioniert auf Mac und Windows. Gib der SSD in der Datenträgerverwaltung einen festen Laufwerksbuchstaben, damit der Zielordner immer stimmt.
+
+### Einrichten (Beispiel: SSD als Laufwerk `D:`)
+
+In PowerShell, am besten mit **Als Administrator ausführen**:
+
+```powershell
+# 1. Code in den versteckten Ordner im Zielordner legen
+git clone https://github.com/AndiCologne/mediathek-auto.git "D:\Movies\.mediathek-auto"
+cd "D:\Movies\.mediathek-auto"
+
+# 2. config.json anlegen und anpassen (zielordner, email_empfaenger, Abschnitt EMAIL, programme_ordner)
+py -3 mediathek_auto.py --config-erstellen
+notepad config.json
+
+# 3. Wöchentlichen Zeitplan einrichten (Mittwoch 02:00 Uhr), Einrichtung prüfen, Test-E-Mail senden
+powershell -ExecutionPolicy Bypass -File install.ps1
+```
+
+Ohne git kannst du den Code auch über **Code → Download ZIP** auf GitHub laden und in den Ordner entpacken. In `config.json` schreibst du Windows-Pfade mit doppeltem Backslash, zum Beispiel `"D:\\Movies"`.
+
+`install.ps1` legt in der Aufgabenplanung die Aufgabe **Mediathek-Auto** an:
+
+- Sie startet jeden Mittwoch um 02:00 Uhr ohne Konsolenfenster (`pythonw.exe`).
+- Wurde `install.ps1` als Administrator ausgeführt, läuft sie auch, wenn niemand angemeldet ist. Ein Passwort wird dafür nicht gespeichert. Sonst läuft sie nur, wenn du angemeldet bist.
+- Sie weckt den PC aus dem Energiesparmodus und holt einen verpassten Lauf nach. Dafür muss in den Energieoptionen unter „Zeitgeber zur Aktivierung zulassen“ die Einstellung **Aktivieren** gewählt sein.
+- Solange ein Lauf dauert, verhindert das Skript den Energiesparmodus.
+
+### Befehle unter Windows
+
+```powershell
+py -3 mediathek_auto.py --dry-run            # nur suchen, Bericht in logs\report_*_dryrun.md
+py -3 mediathek_auto.py --limit 1            # höchstens einen Film laden
+py -3 mediathek_auto.py --pruefen            # Programme, Zielordner und E-Mail prüfen
+py -3 mediathek_auto.py --test-email         # Test-E-Mail senden
+Start-ScheduledTask -TaskName Mediathek-Auto # Hintergrund-Lauf sofort starten
+Get-CimInstance Win32_Process -Filter "Name like 'python%'" | Where-Object CommandLine -like '*mediathek_auto*' | Invoke-CimMethod -MethodName Terminate   # laufenden Durchgang abbrechen
+powershell -ExecutionPolicy Bypass -File uninstall.ps1   # Zeitplan entfernen
+```
 
 ## Wie Filme IMDb zugeordnet werden
 
@@ -146,6 +216,8 @@ python3 mediathek_auto.py                    # normaler Lauf (wie mittwochs)
 python3 mediathek_auto.py --dry-run          # nur suchen, Bericht in logs/report_*_dryrun.md
 python3 mediathek_auto.py --limit 1          # höchstens einen Film laden
 python3 mediathek_auto.py --test-imessage    # Test-iMessage senden
+python3 mediathek_auto.py --test-email       # Test-E-Mail senden
+python3 mediathek_auto.py --pruefen          # Programme, Zielordner und Benachrichtigung prüfen
 python3 mediathek_auto.py --config-erstellen # config.json im beschrifteten Format (neu) schreiben
 launchctl kickstart gui/$(id -u)/local.mediathek-auto   # Hintergrund-Lauf sofort starten
 pkill -f mediathek_auto.py                   # laufenden Durchgang abbrechen

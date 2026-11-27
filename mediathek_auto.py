@@ -13,13 +13,14 @@ Aufruf:
   python3 mediathek_auto.py              # normaler Lauf
   python3 mediathek_auto.py --dry-run    # nur suchen + Bericht, nichts laden
   python3 mediathek_auto.py --limit 2    # höchstens 2 Filme in diesem Lauf
+  python3 mediathek_auto.py --pruefen    # Programme, Zielordner und Benachrichtigung prüfen
 
-Nur Python-Standardbibliothek (läuft mit dem macOS-Python 3.9+).
+Läuft auf macOS und Windows, nur Python-Standardbibliothek (Python 3.9+).
+Bericht nach jedem Lauf per iMessage (nur macOS) und/oder E-Mail (macOS und Windows).
 """
 
 import argparse
 import datetime as dt
-import fcntl
 import gzip
 import json
 import logging
@@ -27,11 +28,25 @@ import lzma
 import os
 import re
 import shutil
+import smtplib
+import ssl
 import subprocess
 import sys
 import time
 import unicodedata
+from email.message import EmailMessage
+from email.utils import formatdate, make_msgid
 from typing import Dict, List, Optional, Set, Tuple
+
+try:                      # macOS/Linux
+    import fcntl
+    msvcrt = None
+except ImportError:       # Windows
+    fcntl = None
+    import msvcrt
+
+IS_WIN = os.name == "nt"
+IS_MAC = sys.platform == "darwin"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -39,8 +54,9 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # Konfiguration (kann über config.json im selben Ordner überschrieben werden)
 # --------------------------------------------------------------------------
 DEFAULTS = {
-    "target_dir": "/Volumes/TB4SSD/AILocalSandbox/Movies",
-    "handbrake_cli": "/opt/homebrew/bin/HandBrakeCLI",
+    "target_dir": r"D:\Movies" if IS_WIN else "/Volumes/TB4SSD/AILocalSandbox/Movies",
+    "handbrake_cli": "HandBrakeCLI.exe" if IS_WIN else "/opt/homebrew/bin/HandBrakeCLI",
+    "tools_dir": "",              # zusätzlicher Ordner mit HandBrakeCLI/ffmpeg/ffprobe
     "handbrake_preset": "Apple 1080p30 Surround",
     "file_extension": ".mp4",
     "min_rating": 8.0,            # Wertung mindestens so hoch (ab 8.0)
@@ -68,8 +84,15 @@ DEFAULTS = {
     ],
     "imdb_base_url": "https://datasets.imdbws.com/",
     "notify": True,               # macOS-Mitteilung am Ende
-    "imessage_to": "",            # Telefonnummer oder Apple-ID-E-Mail für den Abschlussbericht
-    "imessage_when_nothing_new": True,  # auch melden, wenn nichts Neues dabei war
+    "imessage_to": "",            # Telefonnummer oder Apple-ID-E-Mail für den Abschlussbericht (nur macOS)
+    "imessage_when_nothing_new": True,  # auch melden, wenn nichts Neues dabei war (iMessage und E-Mail)
+    "email_to": "",               # E-Mail-Empfänger für den Abschlussbericht (mehrere mit Komma)
+    "email_from": "",             # Absender, leer = smtp_user
+    "smtp_server": "",
+    "smtp_port": 587,
+    "smtp_security": "starttls",  # starttls | ssl | keine
+    "smtp_user": "",
+    "smtp_password": "",          # alternativ Umgebungsvariable MEDIATHEK_SMTP_PASSWORT
     "list_file": "",              # leer = <target_dir>/Heruntergeladene_Filme.txt
     "log_keep_days": 60,          # ältere Logs/Berichte werden automatisch gelöscht
 }
@@ -94,7 +117,25 @@ CONFIG_SCHEMA = [
          "Gibt es bei IMDb mehrere Filme gleichen Titels, gilt der, dessen Laufzeit höchstens so viele "
          "Minuten von der Mediathek abweicht (TV-Fassungen laufen ca. 4 % kürzer, das ist berücksichtigt)."),
         ("imessage_empfaenger", "imessage_to",
-         "Telefonnummer (+49…) oder Apple-ID-E-Mail für den Bericht nach jedem Lauf. Leer = keine iMessage."),
+         "Nur macOS: Telefonnummer (+49…) oder Apple-ID-E-Mail für den Bericht nach jedem Lauf. Leer = keine iMessage."),
+        ("email_empfaenger", "email_to",
+         "E-Mail-Adresse für den Bericht nach jedem Lauf (mehrere mit Komma trennen). Leer = keine E-Mail. "
+         "Der Mailserver wird unter \"EMAIL\" eingetragen."),
+    ]),
+    ("EMAIL", [
+        ("smtp_server", "smtp_server",
+         "Postausgangsserver deines Mail-Anbieters, z. B. smtp.gmail.com, smtp.gmx.net, securesmtp.t-online.de."),
+        ("smtp_port", "smtp_port",
+         "Port des Postausgangsservers: meist 587 (mit starttls) oder 465 (mit ssl)."),
+        ("smtp_verschluesselung", "smtp_security",
+         "starttls (Port 587), ssl (Port 465) oder keine."),
+        ("smtp_benutzer", "smtp_user",
+         "Anmeldename beim Mailserver, meist die eigene E-Mail-Adresse."),
+        ("smtp_passwort", "smtp_password",
+         "Passwort bzw. App-Passwort des Mailkontos. Leer lassen, wenn es in der Umgebungsvariable "
+         "MEDIATHEK_SMTP_PASSWORT steht."),
+        ("email_absender", "email_from",
+         "Absenderadresse. Leer = smtp_benutzer."),
     ]),
     ("WEITERE_EINSTELLUNGEN", [
         ("filme_pro_lauf_hoechstens", "max_per_run",
@@ -107,19 +148,24 @@ CONFIG_SCHEMA = [
         ("handbrake_preset", "handbrake_preset",
          "Name des HandBrake-Presets für das Umcodieren."),
         ("handbrake_programm", "handbrake_cli",
-         "Pfad zu HandBrakeCLI."),
+         "Pfad zu HandBrakeCLI. Wird die Datei dort nicht gefunden, sucht das Skript im PATH und in programme_ordner."),
+        ("programme_ordner", "tools_dir",
+         "Optional: Ordner, in dem HandBrakeCLI, ffmpeg und ffprobe liegen (z. B. C:\\Tools). Leer = nur PATH "
+         "und übliche Installationsorte."),
         ("dateiendung", "file_extension",
          "Dateiendung der fertigen Filme."),
         ("sender", "senders",
          "Berücksichtigte Sender, so wie sie in MediathekView heißen."),
         ("imessage_auch_ohne_neue_filme", "imessage_when_nothing_new",
-         "true = auch dann eine iMessage, wenn kein neuer Film dabei war."),
+         "true = auch dann eine iMessage bzw. E-Mail, wenn kein neuer Film dabei war."),
         ("mac_mitteilung", "notify",
-         "true = zusätzlich eine Mitteilung auf dem Mac anzeigen."),
+         "Nur macOS: true = zusätzlich eine Mitteilung auf dem Mac anzeigen."),
         ("logs_aufbewahren_tage", "log_keep_days",
          "Logs und Berichte, die älter sind, werden automatisch gelöscht."),
     ]),
 ]
+# Einträge, die nur auf dem Mac etwas bewirken (werden unter Windows nicht in config.json geschrieben)
+MAC_ONLY = {"imessage_to", "notify"}
 CONFIG_NOTE = ("Einstellungen für Mediathek-Auto. Nur die Werte hinter \"wert\" ändern, "
                "die \"info\"-Texte erklären den Eintrag. Zahlen ohne Anführungszeichen, "
                "Dezimalpunkt statt Komma (8.0). Gilt ab dem nächsten Lauf.")
@@ -211,7 +257,8 @@ def config_document(cfg: dict) -> dict:
     """Beschriftete config.json aus den aktuellen Einstellungen."""
     doc: Dict[str, object] = {"_LIESMICH": CONFIG_NOTE}
     for sec, items in CONFIG_SCHEMA:
-        doc[sec] = {label: {"wert": cfg.get(key), "info": info} for label, key, info in items}
+        doc[sec] = {label: {"wert": cfg.get(key), "info": info} for label, key, info in items
+                    if IS_MAC or key not in MAC_ONLY}
     return doc
 
 
@@ -265,7 +312,9 @@ def safe_name(s: str) -> str:
     s = s.replace("/", " - ").replace(":", " -").replace("\\", " ")
     s = re.sub(r"[\x00-\x1f\"*?<>|]", "", s)
     s = re.sub(r"\s+", " ", s).strip(" .")
-    return s[:150] or "Unbenannt"
+    # Windows: Ordner + Datei tragen den Namen, der Gesamtpfad darf 260 Zeichen nicht überschreiten
+    s = s[:100 if IS_WIN else 150].rstrip(" .")
+    return s or "Unbenannt"
 
 
 def duration_min(d: str) -> Optional[float]:
@@ -347,6 +396,8 @@ end run
 
 
 def send_imessage(cfg: dict, text: str) -> bool:
+    if not IS_MAC:
+        return False
     to = (cfg.get("imessage_to") or "").strip()
     if not to:
         log.info("Keine iMessage-Adresse eingetragen (config.json → imessage_to).")
@@ -362,6 +413,61 @@ def send_imessage(cfg: dict, text: str) -> bool:
     except Exception as ex:  # noqa
         log.warning("iMessage fehlgeschlagen: %s", ex)
         return False
+
+
+def email_configured(cfg: dict) -> bool:
+    return bool((cfg.get("email_to") or "").strip() and (cfg.get("smtp_server") or "").strip())
+
+
+def send_email(cfg: dict, text: str, subject: str = "") -> bool:
+    """Bericht per E-Mail (SMTP mit STARTTLS, SSL oder unverschlüsselt)."""
+    if not email_configured(cfg):
+        log.info("Keine E-Mail eingerichtet (config.json → email_empfaenger und EMAIL/smtp_server).")
+        return False
+    to = [a.strip() for a in cfg["email_to"].split(",") if a.strip()]
+    user = (cfg.get("smtp_user") or "").strip()
+    sender = (cfg.get("email_from") or "").strip() or user or to[0]
+    password = os.environ.get("MEDIATHEK_SMTP_PASSWORT") or cfg.get("smtp_password") or ""
+    server = cfg["smtp_server"].strip()
+    mode = str(cfg.get("smtp_security") or "starttls").strip().lower()
+    try:
+        port = int(cfg.get("smtp_port") or (465 if mode == "ssl" else 587))
+    except (TypeError, ValueError):
+        port = 465 if mode == "ssl" else 587
+    msg = EmailMessage()
+    msg["Subject"] = subject or text.splitlines()[0]
+    msg["From"] = sender
+    msg["To"] = ", ".join(to)
+    msg["Date"] = formatdate(localtime=True)
+    msg["Message-ID"] = make_msgid(domain=sender.split("@")[-1] if "@" in sender else None)
+    msg.set_content(text)
+    try:
+        ctx = ssl.create_default_context()
+        if mode == "ssl":
+            smtp = smtplib.SMTP_SSL(server, port, context=ctx, timeout=60)
+        else:
+            smtp = smtplib.SMTP(server, port, timeout=60)
+        with smtp:
+            smtp.ehlo()
+            if mode == "starttls":
+                smtp.starttls(context=ctx)
+                smtp.ehlo()
+            if user:
+                smtp.login(user, password)
+            smtp.send_message(msg)
+        log.info("E-Mail an %s gesendet.", ", ".join(to))
+        return True
+    except Exception as ex:  # noqa
+        log.warning("E-Mail fehlgeschlagen (%s:%s, %s): %s", server, port, mode, ex)
+        return False
+
+
+def send_report(cfg: dict, text: str) -> None:
+    """Bericht über alle eingerichteten Wege: iMessage (nur macOS) und E-Mail."""
+    if IS_MAC and (cfg.get("imessage_to") or "").strip():
+        send_imessage(cfg, text)
+    if email_configured(cfg):
+        send_email(cfg, text)
 
 
 # --------------------------------------------------------------------------
@@ -460,6 +566,8 @@ def append_list(cfg: dict, rec: dict, tid: str) -> None:
 
 
 def notify(title: str, text: str) -> None:
+    if not IS_MAC:
+        return
     try:
         text = text.replace('"', "'")
         subprocess.call(["osascript", "-e",
@@ -815,11 +923,48 @@ def display_title(e: dict, m: dict) -> str:
 # --------------------------------------------------------------------------
 # Download + Umcodieren
 # --------------------------------------------------------------------------
+TOOLS_DIR = ""   # wird aus config.json (programme_ordner) gesetzt
+
+
+def tool_dirs() -> List[str]:
+    """Übliche Installationsorte für HandBrakeCLI, ffmpeg und ffprobe."""
+    dirs = [TOOLS_DIR] if TOOLS_DIR else []
+    if IS_WIN:
+        pf = os.environ.get("ProgramFiles", r"C:\Program Files")
+        local = os.environ.get("LOCALAPPDATA", "")
+        home = os.path.expanduser("~")
+        dirs += [BASE_DIR, os.path.join(BASE_DIR, "tools"),
+                 os.path.join(pf, "HandBrake"), os.path.join(pf, "HandBrakeCLI"),
+                 os.path.join(pf, "ffmpeg", "bin"), r"C:\ffmpeg\bin", r"C:\Tools",
+                 os.path.join(local, "Microsoft", "WinGet", "Links") if local else "",
+                 os.path.join(home, "scoop", "shims"), r"C:\ProgramData\chocolatey\bin"]
+    else:
+        dirs += ["/opt/homebrew/bin", "/usr/local/bin"]
+    return [d for d in dirs if d]
+
+
 def find_tool(name: str) -> Optional[str]:
-    for p in (shutil.which(name), "/opt/homebrew/bin/" + name, "/usr/local/bin/" + name):
+    names = [name]
+    if IS_WIN and not name.lower().endswith(".exe"):
+        names.append(name + ".exe")
+    for n in names:
+        p = shutil.which(n)
         if p and os.path.exists(p):
             return p
+    for d in tool_dirs():
+        for n in names:
+            p = os.path.join(d, n)
+            if os.path.isfile(p):
+                return p
     return None
+
+
+def handbrake_path(cfg: dict) -> Optional[str]:
+    """HandBrakeCLI: erst der Pfad aus config.json, sonst PATH und übliche Orte."""
+    p = cfg.get("handbrake_cli") or ""
+    if p and os.path.isfile(p):
+        return p
+    return find_tool(os.path.basename(p) if p else "HandBrakeCLI") or find_tool("HandBrakeCLI")
 
 
 def media_minutes(path: str) -> Optional[float]:
@@ -922,7 +1067,8 @@ def download_once(url: str, dest: str) -> bool:
         return curl_download(url, dest)
     ffmpeg = find_tool("ffmpeg")
     if not ffmpeg:
-        log.warning("HLS-Stream (m3u8) braucht ffmpeg (brew install ffmpeg) – übersprungen.")
+        log.warning("HLS-Stream (m3u8) braucht ffmpeg (%s) – übersprungen.",
+                    "winget install Gyan.FFmpeg" if IS_WIN else "brew install ffmpeg")
         return False
     vurl, aurl = hls_pick(url)
     cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y"] + RECONNECT + ["-i", vurl]
@@ -1049,6 +1195,64 @@ def process(cfg: dict, item: dict, done: dict) -> bool:
 # --------------------------------------------------------------------------
 # Hauptablauf
 # --------------------------------------------------------------------------
+def keep_awake() -> None:
+    """Windows: Ruhezustand verhindern, solange das Skript läuft (macOS: caffeinate in install.sh)."""
+    if not IS_WIN:
+        return
+    try:
+        import ctypes
+        ES_CONTINUOUS, ES_SYSTEM_REQUIRED = 0x80000000, 0x00000001
+        ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)
+    except Exception:
+        pass
+
+
+def lock_file(f) -> None:
+    """Exklusive Sperre ohne Warten; OSError, wenn schon ein Durchgang läuft."""
+    if fcntl:
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    else:
+        msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+
+
+def check_setup(cfg: dict) -> int:
+    """--pruefen: zeigt, ob alles da ist, was ein Lauf braucht."""
+    ok = True
+
+    def line(good: Optional[bool], text: str) -> None:
+        print("%s %s" % ({True: "✔", False: "❌", None: "ℹ️ "}[good], text))
+
+    line(None, "System: %s, Python %s (%s)" % ("Windows" if IS_WIN else ("macOS" if IS_MAC else sys.platform),
+                                               sys.version.split()[0], sys.executable))
+    if sys.version_info < (3, 9):
+        line(False, "Python 3.9 oder neuer nötig")
+        ok = False
+    t = cfg["target_dir"]
+    if os.path.isdir(t):
+        line(True, "Zielordner: %s (frei: %.0f GB)" % (t, shutil.disk_usage(t).free / 1e9))
+    else:
+        line(False, "Zielordner fehlt: %s (Laufwerk angeschlossen? config.json → zielordner)" % t)
+        ok = False
+    hb = handbrake_path(cfg)
+    line(bool(hb), "HandBrakeCLI: %s" % (hb or "nicht gefunden (config.json → handbrake_programm / programme_ordner)"))
+    ok = ok and bool(hb)
+    for tool in ("ffmpeg", "ffprobe"):
+        p = find_tool(tool)
+        line(bool(p), "%s: %s" % (tool, p or "nicht gefunden – nötig für Streams (arte), Tonspur-Wahl und "
+                                              "Längenprüfung"))
+    c = find_tool("curl")
+    line(bool(c), "curl: %s" % (c or "nicht gefunden"))
+    ok = ok and bool(c)
+    if email_configured(cfg):
+        line(True, "E-Mail-Bericht an %s über %s:%s (%s)" % (cfg["email_to"], cfg["smtp_server"],
+                                                            cfg.get("smtp_port"), cfg.get("smtp_security")))
+    else:
+        line(None, "Kein E-Mail-Bericht eingerichtet (config.json → email_empfaenger, EMAIL)")
+    if IS_MAC:
+        line(None, "iMessage-Bericht: %s" % (cfg.get("imessage_to") or "aus"))
+    return 0 if ok else 1
+
+
 def setup_logging(dry: bool) -> str:
     os.makedirs(LOG_DIR, exist_ok=True)
     stamp = dt.datetime.now().strftime("%Y-%m-%d_%H%M")
@@ -1058,11 +1262,16 @@ def setup_logging(dry: bool) -> str:
     fh = logging.FileHandler(path, encoding="utf-8")
     fh.setFormatter(fmt)
     fh.setLevel(logging.DEBUG)
-    sh = logging.StreamHandler(sys.stdout)
-    sh.setFormatter(fmt)
-    sh.setLevel(logging.INFO)
     log.addHandler(fh)
-    log.addHandler(sh)
+    if sys.stdout is not None:   # pythonw.exe (Windows-Aufgabenplanung) hat keine Konsole
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+        sh = logging.StreamHandler(sys.stdout)
+        sh.setFormatter(fmt)
+        sh.setLevel(logging.INFO)
+        log.addHandler(sh)
     return stamp
 
 
@@ -1086,16 +1295,28 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=None, help="max. Filme in diesem Lauf")
     ap.add_argument("--test-imessage", action="store_true",
                     help="nur eine Test-iMessage senden (erteilt die macOS-Berechtigung)")
+    ap.add_argument("--test-email", action="store_true",
+                    help="nur eine Test-E-Mail senden (prüft die Einstellungen unter EMAIL)")
+    ap.add_argument("--pruefen", action="store_true",
+                    help="prüfen, ob Programme, Zielordner und Benachrichtigung eingerichtet sind")
     ap.add_argument("--config-erstellen", action="store_true",
                     help="config.json im beschrifteten Format mit den aktuellen Werten (neu) schreiben")
     args = ap.parse_args()
 
     cfg = load_config()
+    global TOOLS_DIR
+    TOOLS_DIR = (cfg.get("tools_dir") or "").strip()
     if args.config_erstellen:
         path = os.path.join(BASE_DIR, "config.json")
         save_json(path, config_document(cfg))
         print("config.json geschrieben: %s" % path)
         return 0
+    if args.pruefen:
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+        return check_setup(cfg)
     for d in (STATE_DIR, LOG_DIR, CACHE_DIR, TMP_DIR):
         os.makedirs(d, exist_ok=True)
     stamp = setup_logging(args.dry_run)
@@ -1104,13 +1325,19 @@ def main() -> int:
     if args.test_imessage:
         ok = send_imessage(cfg, "🎬 Test von der Mediathek-Automatik – iMessage funktioniert.")
         return 0 if ok else 1
+    if args.test_email:
+        ok = send_email(cfg, "Test von der Mediathek-Automatik – der E-Mail-Bericht funktioniert.\n",
+                        "🎬 Mediathek-Automatik: Test-E-Mail")
+        return 0 if ok else 1
+
+    keep_awake()
 
     try:
         return run_main(cfg, args, stamp)
     except Exception as ex:  # noqa
         log.exception("Lauf abgebrochen: %s", ex)
         if not args.dry_run:
-            send_imessage(cfg, "❌ Mediathek-Lauf abgebrochen: %s\n(Details im Log auf der SSD)" % ex)
+            send_report(cfg, "❌ Mediathek-Lauf abgebrochen: %s\n(Details im Log auf der SSD)" % ex)
         return 1
 
 
@@ -1118,14 +1345,17 @@ def run_main(cfg: dict, args, stamp: str) -> int:
     if not os.path.isdir(cfg["target_dir"]):
         log.error("Zielordner nicht da (SSD nicht angeschlossen?): %s", cfg["target_dir"])
         if not args.dry_run:
-            send_imessage(cfg, "⚠️ Mediathek-Lauf übersprungen: SSD nicht angeschlossen.")
+            send_report(cfg, "⚠️ Mediathek-Lauf übersprungen: SSD nicht angeschlossen.")
         return 2
-    if not args.dry_run and not os.path.exists(cfg["handbrake_cli"]):
+    hb = handbrake_path(cfg)
+    if not args.dry_run and not hb:
         raise RuntimeError("HandBrakeCLI nicht gefunden: %s" % cfg["handbrake_cli"])
+    if hb:
+        cfg["handbrake_cli"] = hb
 
     lock = open(os.path.join(STATE_DIR, ".lock"), "w")
     try:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        lock_file(lock)
     except OSError:
         log.error("Es läuft bereits ein anderer Durchgang.")
         return 3
@@ -1279,7 +1509,7 @@ def run_main(cfg: dict, args, stamp: str) -> int:
         except Exception:
             pass
         if added or failed_now or disk_full or cfg.get("imessage_when_nothing_new", True):
-            send_imessage(cfg, "\n".join(lines))
+            send_report(cfg, "\n".join(lines))
     log.info(msg)
     if cfg.get("notify"):
         notify("Mediathek-Filme", msg)

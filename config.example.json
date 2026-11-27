@@ -31,7 +31,37 @@
     },
     "imessage_empfaenger": {
       "wert": "deine-apple-id@example.com",
-      "info": "Telefonnummer (+49…) oder Apple-ID-E-Mail für den Bericht nach jedem Lauf. Leer = keine iMessage."
+      "info": "Nur macOS: Telefonnummer (+49…) oder Apple-ID-E-Mail für den Bericht nach jedem Lauf. Leer = keine iMessage."
+    },
+    "email_empfaenger": {
+      "wert": "",
+      "info": "E-Mail-Adresse für den Bericht nach jedem Lauf (mehrere mit Komma trennen). Leer = keine E-Mail. Der Mailserver wird unter \"EMAIL\" eingetragen."
+    }
+  },
+  "EMAIL": {
+    "smtp_server": {
+      "wert": "",
+      "info": "Postausgangsserver deines Mail-Anbieters, z. B. smtp.gmail.com, smtp.gmx.net, securesmtp.t-online.de."
+    },
+    "smtp_port": {
+      "wert": 587,
+      "info": "Port des Postausgangsservers: meist 587 (mit starttls) oder 465 (mit ssl)."
+    },
+    "smtp_verschluesselung": {
+      "wert": "starttls",
+      "info": "starttls (Port 587), ssl (Port 465) oder keine."
+    },
+    "smtp_benutzer": {
+      "wert": "",
+      "info": "Anmeldename beim Mailserver, meist die eigene E-Mail-Adresse."
+    },
+    "smtp_passwort": {
+      "wert": "",
+      "info": "Passwort bzw. App-Passwort des Mailkontos. Leer lassen, wenn es in der Umgebungsvariable MEDIATHEK_SMTP_PASSWORT steht."
+    },
+    "email_absender": {
+      "wert": "",
+      "info": "Absenderadresse. Leer = smtp_benutzer."
     }
   },
   "WEITERE_EINSTELLUNGEN": {
@@ -53,7 +83,11 @@
     },
     "handbrake_programm": {
       "wert": "/opt/homebrew/bin/HandBrakeCLI",
-      "info": "Pfad zu HandBrakeCLI."
+      "info": "Pfad zu HandBrakeCLI. Wird die Datei dort nicht gefunden, sucht das Skript im PATH und in programme_ordner."
+    },
+    "programme_ordner": {
+      "wert": "",
+      "info": "Optional: Ordner, in dem HandBrakeCLI, ffmpeg und ffprobe liegen (z. B. C:\\Tools). Leer = nur PATH und übliche Installationsorte."
     },
     "dateiendung": {
       "wert": ".mp4",
@@ -87,11 +121,11 @@
     },
     "imessage_auch_ohne_neue_filme": {
       "wert": true,
-      "info": "true = auch dann eine iMessage, wenn kein neuer Film dabei war."
+      "info": "true = auch dann eine iMessage bzw. E-Mail, wenn kein neuer Film dabei war."
     },
     "mac_mitteilung": {
       "wert": true,
-      "info": "true = zusätzlich eine Mitteilung auf dem Mac anzeigen."
+      "info": "Nur macOS: true = zusätzlich eine Mitteilung auf dem Mac anzeigen."
     },
     "logs_aufbewahren_tage": {
       "wert": 60,
