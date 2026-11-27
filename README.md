@@ -8,7 +8,7 @@ Lädt automatisch gut bewertete Spielfilme aus den Mediatheken von ARD und ZDF h
 
 1. Das Skript lädt die aktuelle [MediathekView](https://mediathekview.de)-Filmliste. Es ist dieselbe Liste, die auch die App MediathekView nutzt.
 2. Es filtert Spielfilme heraus: passende Länge, ohne Hörfassung, Gebärdensprache, klare Sprache, Originalfassung, Krimireihen und Mehrteiler.
-3. Es gleicht die Filme mit den [IMDb Non-Commercial Datasets](https://developer.imdb.com/non-commercial-datasets/) ab. Titel, Produktionsjahr und Laufzeit müssen passen, Dokumentarfilme werden ausgeschlossen.
+3. Es gleicht die Filme mit den [IMDb Non-Commercial Datasets](https://developer.imdb.com/non-commercial-datasets/) ab. Titel, Produktionsjahr und Laufzeit müssen passen, Dokumentarfilme werden ausgeschlossen. Gibt es mehrere Filme gleichen Titels, entscheiden die Laufzeit (±5 Minuten) und die Besetzung, siehe [Wie Filme IMDb zugeordnet werden](#wie-filme-imdb-zugeordnet-werden).
 4. Geladen wird, was die Grenzen in `config.json` erfüllt. Voreingestellt sind eine IMDb-Wertung ab 8.0, mehr als 2.500 Bewertungen, Erscheinungsjahr ab 1970 und eine Länge von 70 bis 240 Minuten.
 5. Filme, die schon in `Heruntergeladene_Filme.txt` stehen, werden übersprungen.
 6. Heruntergeladen wird immer die beste verfügbare Videospur mit deutscher Tonspur (ohne Hörfassung). Danach prüft das Skript, ob der Download vollständig ist.
@@ -30,7 +30,7 @@ Der Code liegt in einem versteckten Unterordner des Zielordners:
     ├── config.json                           ← alle Einstellungen
     ├── install.sh / uninstall.sh             ← wöchentlichen Zeitplan ein- und ausschalten
     ├── README.md
-    ├── cache/   Filmliste und IMDb-Daten (etwa 1 GB, wöchentlich erneuert)
+    ├── cache/   Filmliste und IMDb-Daten (etwa 2 GB mit Besetzungsdaten, wöchentlich erneuert)
     ├── logs/    Protokoll und Bericht (report_*.md) je Lauf, nach 60 Tagen automatisch gelöscht
     ├── state/   interne Listen (geladene, fehlgeschlagene Filme, Zuordnungen von Hand)
     └── tmp/     Zwischendateien während eines Laufs
@@ -83,6 +83,7 @@ Alle Einstellungen stehen in `config.json` im Code-Ordner. Jeder Eintrag besteht
 | `laenge_mindestens_minuten` | `70` | Kürzere Sendungen werden ignoriert |
 | `laenge_hoechstens_minuten` | `240` | Längere Sendungen werden ignoriert (`0` = keine Obergrenze) |
 | `erscheinungsjahr_ab` | `1970` | Erscheinungsjahr laut IMDb mindestens (`0` = alle Jahre) |
+| `laufzeit_toleranz_minuten` | `5` | Gibt es mehrere IMDb-Filme gleichen Titels, gilt der, dessen Laufzeit höchstens so viele Minuten von der Mediathek abweicht |
 | `imessage_empfaenger` | leer | Telefonnummer (+49…) oder Apple-ID-E-Mail für den Bericht. Leer = keine iMessage. |
 
 ### WEITERE_EINSTELLUNGEN
@@ -91,6 +92,7 @@ Alle Einstellungen stehen in `config.json` im Code-Ordner. Jeder Eintrag besteht
 |---|---|---|
 | `filme_pro_lauf_hoechstens` | `15` | Höchstzahl neuer Filme pro Lauf |
 | `freier_speicher_mindestens_gb` | `30` | So viel bleibt im Zielordner frei, sonst stoppt der Lauf |
+| `besetzung_abgleichen` | `true` | Unklare Filme über Darsteller und Regie klären (lädt dafür etwa 1 GB zusätzliche IMDb-Daten pro Woche) |
 | `handbrake_preset` | `Apple 1080p30 Surround` | HandBrake-Preset |
 | `handbrake_programm` | `/opt/homebrew/bin/HandBrakeCLI` | Pfad zu HandBrakeCLI |
 | `dateiendung` | `.mp4` | Dateiendung der fertigen Filme |
@@ -100,6 +102,23 @@ Alle Einstellungen stehen in `config.json` im Code-Ordner. Jeder Eintrag besteht
 | `logs_aufbewahren_tage` | `60` | Ältere Logs und Berichte werden automatisch gelöscht |
 
 Eine vollständige Vorlage steht in [`config.example.json`](config.example.json).
+
+## Wie Filme IMDb zugeordnet werden
+
+Die Mediathek liefert Titel, Länge, eine Beschreibung und einen Link zur Sendungsseite. Ein Produktionsjahr steht nur manchmal dabei. Bei 3sat steht es meist im Titel („Spielfilm, USA 1972“), bei ARD und arte oft nicht. Bei IMDb gibt es dagegen für viele Titel mehrere Filme: Remakes („Papillon“ von 1973 und 2017), Neuverfilmungen von Märchen oder Allerweltstitel wie „Luther“. Damit nie der falsche Film mit der falschen Wertung geladen wird, prüft das Skript in dieser Reihenfolge:
+
+1. **Titel:** Der deutsche Mediathek-Titel wird mit den IMDb-Titeln verglichen, auch mit den deutschen Verleihtiteln.
+2. **Produktionsjahr:** Steht ein Jahr in Titel oder Beschreibung, muss das IMDb-Jahr auf ±1 Jahr passen.
+3. **Laufzeit:** Bleibt mehr als ein Kandidat übrig, gilt der, dessen IMDb-Laufzeit höchstens `laufzeit_toleranz_minuten` (Standard 5) von der Mediathek abweicht. Berücksichtigt ist, dass Filme im deutschen Fernsehen rund 4 % kürzer laufen (25 statt 24 Bilder pro Sekunde): Ein 120-Minuten-Film dauert dort 115 Minuten.
+4. **Bekanntheit:** Hat ein Kandidat mindestens fünfmal so viele IMDb-Bewertungen wie der nächste, ist er es.
+5. **Besetzung:** Ist es danach noch unklar, ruft das Skript die Sendungsseite aus dem Mediathek-Link ab. Dort und in der Beschreibung sucht es nach den Namen von Darstellern und Regie der IMDb-Kandidaten. Es gewinnt der Kandidat mit den meisten Treffern, wenn er eindeutig vorne liegt.
+   Auch Filme ohne Jahresangabe, die bei IMDb wenig bekannt sind, werden so geprüft: Sie werden nur geladen, wenn mindestens zwei Namen aus ihrer Besetzung gefunden werden.
+
+Der Besetzungs-Abgleich läuft nur für Filme, bei denen mindestens ein Kandidat die Kriterien erfüllen würde (Wertung, Bewertungen, Jahr). Dafür lädt das Skript die IMDb-Datensätze `title.principals` und `name.basics` (zusammen etwa 1 GB, wöchentlich zwischengespeichert).
+
+Der Bericht `logs/report_*.md` zeigt, was passiert ist:
+- **Über die Besetzung zugeordnet:** Filme, die erst über Darsteller oder Regie geklärt wurden, mit den gefundenen Namen
+- **Nicht eindeutig zuzuordnen, übersprungen:** Titel, die trotz allem unklar bleiben. Hier stehen nur Fälle, bei denen mindestens ein Kandidat die Kriterien erfüllen würde, du verpasst also nichts anderes.
 
 ## Liste der vorhandenen Filme: `Heruntergeladene_Filme.txt`
 

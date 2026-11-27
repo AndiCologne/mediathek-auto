@@ -48,6 +48,8 @@ DEFAULTS = {
     "min_votes": 2500,            # IMDb-Stimmen müssen MEHR als dieser Wert sein
     "min_minutes": 70,            # Mindestlänge in der Mediathek
     "max_minutes": 240,           # Höchstlänge in der Mediathek (0 = keine Grenze)
+    "runtime_tolerance": 5,       # Laufzeit Mediathek vs. IMDb, ± Minuten (entscheidet bei Mehrdeutigkeit)
+    "cast_check": True,           # mehrdeutige/unsichere Filme über die Besetzung klären
     "max_per_run": 15,            # Höchstzahl neuer Filme pro Lauf
     "min_free_gb": 30,            # so viel muss auf der SSD frei bleiben
     "imdb_types": ["movie", "tvMovie"],
@@ -88,6 +90,9 @@ CONFIG_SCHEMA = [
          "Längere Sendungen werden ignoriert. 0 = keine Obergrenze."),
         ("erscheinungsjahr_ab", "min_year",
          "Nur Filme, die laut IMDb in diesem Jahr oder später erschienen sind. 0 = alle Jahre."),
+        ("laufzeit_toleranz_minuten", "runtime_tolerance",
+         "Gibt es bei IMDb mehrere Filme gleichen Titels, gilt der, dessen Laufzeit höchstens so viele "
+         "Minuten von der Mediathek abweicht (TV-Fassungen laufen ca. 4 % kürzer, das ist berücksichtigt)."),
         ("imessage_empfaenger", "imessage_to",
          "Telefonnummer (+49…) oder Apple-ID-E-Mail für den Bericht nach jedem Lauf. Leer = keine iMessage."),
     ]),
@@ -96,6 +101,9 @@ CONFIG_SCHEMA = [
          "So viele neue Filme werden pro Lauf höchstens geladen (ein Film braucht ca. 30–60 Minuten)."),
         ("freier_speicher_mindestens_gb", "min_free_gb",
          "So viel Platz bleibt im Zielordner mindestens frei, sonst stoppt der Lauf."),
+        ("besetzung_abgleichen", "cast_check",
+         "true = mehrdeutige Filme über Darsteller/Regie klären (Mediathek-Seite + IMDb-Besetzung, "
+         "lädt dafür ca. 1 GB IMDb-Daten wöchentlich)."),
         ("handbrake_preset", "handbrake_preset",
          "Name des HandBrake-Presets für das Umcodieren."),
         ("handbrake_programm", "handbrake_cli",
@@ -678,16 +686,123 @@ def match_entry(cfg: dict, e: dict, by_title, info) -> Tuple[Optional[dict], str
         if exact:
             c = exact
     if len(c) > 1:
+        # Laufzeit mit Toleranz: bleibt genau ein Kandidat, ist er es
+        tol = float(cfg.get("runtime_tolerance") or 0)
+        close = [m for m in c if runtime_close(m.get("runtime"), mins, tol)]
+        if len(close) == 1:
+            c = close
+        elif len(close) > 1:
+            c = close
+    c = [dict(m, _via=hits[m["id"]]) for m in c]   # Kopien, info[] bleibt unverändert
+    if len(c) > 1:
         c.sort(key=lambda m: m.get("votes", 0), reverse=True)
         if c[0].get("votes", 0) >= 5 * max(1, c[1].get("votes", 0)):
             c = c[:1]
         else:
+            e["_cands"] = c
             return None, "mehrdeutig: " + ", ".join("%s (%s)" % (m["title"], m["year"]) for m in c[:4])
     if not prod and not e["years"] and c[0].get("votes", 0) < 5 * cfg["min_votes"]:
+        e["_cands"] = c
         return None, "unsicher (kein Jahr, wenig bekannt)"
-    m = dict(c[0])
-    m["_via"] = hits[m["id"]]
-    return m, "ok"
+    return c[0], "ok"
+
+
+def runtime_close(rt: Optional[int], mins: float, tol: float) -> bool:
+    """IMDb-Laufzeit passt auf ±tol Minuten – auch zur TV-Fassung (25 statt 24 Bilder/s, ca. 4 % kürzer)."""
+    if not rt or not tol:
+        return False
+    return abs(mins - rt) <= tol or abs(mins - rt * 24.0 / 25.0) <= tol
+
+
+def qualifies(cfg: dict, m: dict) -> bool:
+    """Erfüllt der IMDb-Film die Auswahlkriterien (Wertung, Stimmen, Jahr)?"""
+    return (m.get("rating", 0) >= cfg["min_rating"] and m.get("votes", 0) > cfg["min_votes"]
+            and (m.get("year") or 0) >= (cfg.get("min_year") or 0))
+
+
+# --------------------------------------------------------------------------
+# Besetzungs-Abgleich (IMDb principals + name.basics vs. Mediathek-Seite)
+# --------------------------------------------------------------------------
+CAST_FILES = ["title.principals.tsv.gz", "name.basics.tsv.gz"]
+CAST_CATEGORIES = {"actor", "actress", "director", "self"}
+
+
+def load_cast(cfg: dict, tids: Set[str]) -> Dict[str, List[str]]:
+    """IMDb-ID -> Namen von Darstellern und Regie (nur für die gefragten Filme)."""
+    files = {}
+    for name in CAST_FILES:
+        dest = os.path.join(CACHE_DIR, name)
+        if file_age_days(dest) > cfg["imdb_max_age_days"]:
+            log.info("Lade IMDb-Datensatz %s (für den Besetzungs-Abgleich)", name)
+            if not curl_download(cfg["imdb_base_url"] + name, dest) and not os.path.exists(dest):
+                log.warning("Besetzungs-Abgleich nicht möglich: %s fehlt.", name)
+                return {}
+        files[name] = dest
+    people: Dict[str, List[str]] = {}
+    nconsts: Set[str] = set()
+    for row in iter_tsv(files["title.principals.tsv.gz"]):
+        if len(row) >= 4 and row[0] in tids and row[3] in CAST_CATEGORIES:
+            people.setdefault(row[0], []).append(row[2])
+            nconsts.add(row[2])
+    names: Dict[str, str] = {}
+    for row in iter_tsv(files["name.basics.tsv.gz"]):
+        if len(row) >= 2 and row[0] in nconsts:
+            names[row[0]] = row[1]
+    return {t: [names[n] for n in ns if n in names] for t, ns in people.items()}
+
+
+def page_text(url: str) -> str:
+    """Text der Sendungsseite (HTML ohne Tags, Entities/Unicode-Escapes aufgelöst)."""
+    if not url or not url.startswith("http"):
+        return ""
+    try:
+        raw = subprocess.run(["curl", "-sS", "-L", "--fail", "--max-time", "25", "-A",
+                              "Mozilla/5.0 (Macintosh) mediathek-auto", url],
+                             capture_output=True, timeout=40).stdout.decode("utf-8", "replace")
+    except Exception:
+        return ""
+    import html as _html
+    raw = re.sub(r"\\u([0-9a-fA-F]{4})", lambda m: chr(int(m.group(1), 16)), raw)
+    raw = re.sub(r"<[^>]+>", " ", raw)
+    return _html.unescape(raw)
+
+
+def cast_hits(names: List[str], text_norm: str) -> List[str]:
+    found = []
+    for n in names:
+        nn = norm(n)
+        if len(nn) >= 5 and " " in nn and (" " + nn + " ") in text_norm:
+            found.append(n)
+    return found
+
+
+def resolve_by_cast(cfg: dict, entries: List[dict]) -> Dict[int, Tuple[dict, List[str]]]:
+    """Klärt mehrdeutige/unsichere Einträge über die Besetzung.
+    Mehrdeutig: Kandidat mit den meisten Treffern (mind. 1, eindeutig vorne).
+    Unsicher (ein Kandidat): mind. 2 Namen müssen auf der Seite stehen."""
+    tids = {m["id"] for e in entries for m in e["_cands"]}
+    if not tids:
+        return {}
+    cast = load_cast(cfg, tids)
+    if not cast:
+        return {}
+    out: Dict[int, Tuple[dict, List[str]]] = {}
+    pages: Dict[str, str] = {}
+    for e in entries:
+        site = e.get("website", "")
+        if site and site not in pages:
+            pages[site] = page_text(site)
+        text_norm = " " + norm(e["beschreibung"] + " " + pages.get(site, "")) + " "
+        scored = sorted(((cast_hits(cast.get(m["id"], []), text_norm), m) for m in e["_cands"]),
+                        key=lambda x: len(x[0]), reverse=True)
+        best_hits, best = scored[0]
+        if len(e["_cands"]) == 1:
+            ok = len(best_hits) >= 2
+        else:
+            ok = len(best_hits) >= 1 and len(best_hits) > len(scored[1][0])
+        if ok:
+            out[id(e)] = (dict(best), best_hits)
+    return out
 
 
 def display_title(e: dict, m: dict) -> str:
@@ -1034,12 +1149,33 @@ def run_main(cfg: dict, args, stamp: str) -> int:
     picks: Dict[str, dict] = {}
     reasons: Dict[str, int] = {}
     ambiguous: List[str] = []
+    results = []
+    open_cases = []   # mehrdeutig/unsicher, aber mind. ein Kandidat erfüllt die Kriterien
     for e in cands:
         m, why = match_entry(cfg, e, by_title, info)
+        if not m and e.get("_cands"):
+            e["_cands"] = [x for x in e["_cands"] if qualifies(cfg, x)]
+            if e["_cands"]:
+                open_cases.append(e)
+        results.append((e, m, why))
+    open_ids = {id(e) for e in open_cases}
+    resolved: Dict[int, Tuple[dict, List[str]]] = {}
+    if open_cases and cfg.get("cast_check", True):
+        log.info("Besetzungs-Abgleich für %d unklare Filme …", len(open_cases))
+        resolved = resolve_by_cast(cfg, open_cases)
+        log.info("Besetzungs-Abgleich: %d davon geklärt.", len(resolved))
+    cast_notes: Dict[str, str] = {}
+    for e, m, why in results:
+        if not m and id(e) in resolved:
+            m, found = resolved[id(e)]
+            why = "ok (Besetzung)"
+            cast_notes[m["id"]] = ", ".join(found[:3])
+            log.info("✓ Über Besetzung geklärt: %s → %s (%s) – %s",
+                     e["titel"], m["title"], m["year"], cast_notes[m["id"]])
         if not m:
             key = why.split(":")[0]
             reasons[key] = reasons.get(key, 0) + 1
-            if why.startswith("mehrdeutig") and e["signal"]:
+            if id(e) in open_ids:
                 ambiguous.append("%s [%s] → %s" % (e["titel"], e["sender"], why))
             continue
         if m.get("rating", 0) < cfg["min_rating"] or m.get("votes", 0) <= cfg["min_votes"]:
@@ -1074,8 +1210,16 @@ def run_main(cfg: dict, args, stamp: str) -> int:
         report.append("- %s (%s) – IMDb %.1f, %d Stimmen – %s / %s – „%s“ – %s" % (
             p["title"], m["year"], m.get("rating", 0), m.get("votes", 0), e["sender"],
             e["thema"], e["titel"], "HD" if e["url_hd"] else "SD"))
+    if cast_notes:
+        report += ["", "## Über die Besetzung zugeordnet"]
+        for tid, note in cast_notes.items():
+            if tid in picks:
+                p = picks[tid]
+                report.append("- %s (%s) – gefunden: %s" % (p["title"], p["imdb"]["year"], note))
     if ambiguous:
-        report += ["", "## Mehrdeutig, übersprungen"] + ["- " + a for a in ambiguous[:100]]
+        report += ["", "## Nicht eindeutig zuzuordnen, übersprungen",
+                   "(nur Titel, bei denen mindestens ein IMDb-Kandidat die Kriterien erfüllen würde)"]
+        report += ["- " + a for a in ambiguous[:100]]
 
     added: List[str] = []
     failed_now: List[str] = []

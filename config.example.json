@@ -25,6 +25,10 @@
       "wert": 1970,
       "info": "Nur Filme, die laut IMDb in diesem Jahr oder später erschienen sind. 0 = alle Jahre."
     },
+    "laufzeit_toleranz_minuten": {
+      "wert": 5,
+      "info": "Gibt es bei IMDb mehrere Filme gleichen Titels, gilt der, dessen Laufzeit höchstens so viele Minuten von der Mediathek abweicht (TV-Fassungen laufen ca. 4 % kürzer, das ist berücksichtigt)."
+    },
     "imessage_empfaenger": {
       "wert": "deine-apple-id@example.com",
       "info": "Telefonnummer (+49…) oder Apple-ID-E-Mail für den Bericht nach jedem Lauf. Leer = keine iMessage."
@@ -38,6 +42,10 @@
     "freier_speicher_mindestens_gb": {
       "wert": 30,
       "info": "So viel Platz bleibt im Zielordner mindestens frei, sonst stoppt der Lauf."
+    },
+    "besetzung_abgleichen": {
+      "wert": true,
+      "info": "true = mehrdeutige Filme über Darsteller/Regie klären (Mediathek-Seite + IMDb-Besetzung, lädt dafür ca. 1 GB IMDb-Daten wöchentlich)."
     },
     "handbrake_preset": {
       "wert": "Apple 1080p30 Surround",
